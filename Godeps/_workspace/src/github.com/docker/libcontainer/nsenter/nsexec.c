@@ -137,8 +137,6 @@ void nsexec()
 	}
 
 	if (setjmp(env) == 1) {
-		// Child
-
 		if (setsid() == -1) {
 			pr_perror("setsid failed");
 			exit(1);
@@ -164,11 +162,7 @@ void nsexec()
 		// Finish executing, let the Go runtime take over.
 		return;
 	}
-	// Parent
 
-	// We must fork to actually enter the PID namespace, use CLONE_PARENT
-	// so the child can have the right parent, and we don't need to forward
-	// the child's exit code or resend its death signal.
 	child = clone_parent(&env);
 	if (child < 0) {
 		pr_perror("Unable to fork");

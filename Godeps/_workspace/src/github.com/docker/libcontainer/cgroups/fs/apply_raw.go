@@ -1,8 +1,6 @@
 package fs
 
 import (
-	"fmt"
-	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -21,7 +19,6 @@ var (
 		"cpuset":     &CpusetGroup{},
 		"cpuacct":    &CpuacctGroup{},
 		"blkio":      &BlkioGroup{},
-		"hugetlb":    &HugetlbGroup{},
 		"perf_event": &PerfEventGroup{},
 		"freezer":    &FreezerGroup{},
 	}
@@ -78,12 +75,9 @@ type data struct {
 }
 
 func (m *Manager) Apply(pid int) error {
-
 	if m.Cgroups == nil {
 		return nil
 	}
-
-	var c = m.Cgroups
 
 	d, err := getCgroupData(m.Cgroups, pid)
 	if err != nil {
@@ -114,12 +108,6 @@ func (m *Manager) Apply(pid int) error {
 	}
 	m.Paths = paths
 
-	if paths["cpu"] != "" {
-		if err := CheckCpushares(paths["cpu"], c.CpuShares); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -129,6 +117,19 @@ func (m *Manager) Destroy() error {
 
 func (m *Manager) GetPaths() map[string]string {
 	return m.Paths
+}
+
+// Symmetrical public function to update device based cgroups.  Also available
+// in the systemd implementation.
+func ApplyDevices(c *configs.Cgroup, pid int) error {
+	d, err := getCgroupData(c, pid)
+	if err != nil {
+		return err
+	}
+
+	devices := subsystems["devices"]
+
+	return devices.Apply(d)
 }
 
 func (m *Manager) GetStats() (*cgroups.Stats, error) {
@@ -277,29 +278,5 @@ func removePath(p string, err error) error {
 	if p != "" {
 		return os.RemoveAll(p)
 	}
-	return nil
-}
-
-func CheckCpushares(path string, c int64) error {
-	var cpuShares int64
-
-	fd, err := os.Open(filepath.Join(path, "cpu.shares"))
-	if err != nil {
-		return err
-	}
-	defer fd.Close()
-
-	_, err = fmt.Fscanf(fd, "%d", &cpuShares)
-	if err != nil && err != io.EOF {
-		return err
-	}
-	if c != 0 {
-		if c > cpuShares {
-			return fmt.Errorf("The maximum allowed cpu-shares is %d", cpuShares)
-		} else if c < cpuShares {
-			return fmt.Errorf("The minimum allowed cpu-shares is %d", cpuShares)
-		}
-	}
-
 	return nil
 }

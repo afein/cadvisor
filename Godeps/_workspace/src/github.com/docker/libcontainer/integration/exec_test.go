@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"io/ioutil"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/docker/libcontainer"
@@ -204,6 +202,9 @@ func TestEnter(t *testing.T) {
 
 	config := newTemplateConfig(rootfs)
 
+	factory, err := libcontainer.New(root, libcontainer.Cgroupfs)
+	ok(t, err)
+
 	container, err := factory.Create("test", config)
 	ok(t, err)
 	defer container.Destroy()
@@ -291,6 +292,9 @@ func TestProcessEnv(t *testing.T) {
 
 	config := newTemplateConfig(rootfs)
 
+	factory, err := libcontainer.New(root, libcontainer.Cgroupfs)
+	ok(t, err)
+
 	container, err := factory.Create("test", config)
 	ok(t, err)
 	defer container.Destroy()
@@ -339,6 +343,9 @@ func TestProcessCaps(t *testing.T) {
 	defer remove(rootfs)
 
 	config := newTemplateConfig(rootfs)
+
+	factory, err := libcontainer.New(root, libcontainer.Cgroupfs)
+	ok(t, err)
 
 	container, err := factory.Create("test", config)
 	ok(t, err)
@@ -418,12 +425,14 @@ func testFreeze(t *testing.T, systemd bool) {
 	defer remove(rootfs)
 
 	config := newTemplateConfig(rootfs)
-	f := factory
 	if systemd {
-		f = systemdFactory
+		config.Cgroups.Slice = "system.slice"
 	}
 
-	container, err := f.Create("test", config)
+	factory, err := libcontainer.New(root, libcontainer.Cgroupfs)
+	ok(t, err)
+
+	container, err := factory.Create("test", config)
 	ok(t, err)
 	defer container.Destroy()
 
@@ -465,37 +474,6 @@ func testFreeze(t *testing.T, systemd bool) {
 	}
 }
 
-func TestCpuShares(t *testing.T) {
-	testCpuShares(t, false)
-}
-
-func TestSystemdCpuShares(t *testing.T) {
-	if !systemd.UseSystemd() {
-		t.Skip("Systemd is unsupported")
-	}
-	testCpuShares(t, true)
-}
-
-func testCpuShares(t *testing.T, systemd bool) {
-	if testing.Short() {
-		return
-	}
-	rootfs, err := newRootfs()
-	ok(t, err)
-	defer remove(rootfs)
-
-	config := newTemplateConfig(rootfs)
-	if systemd {
-		config.Cgroups.Slice = "system.slice"
-	}
-	config.Cgroups.CpuShares = 1
-
-	_, _, err = runContainer(config, "", "ps")
-	if err == nil {
-		t.Fatalf("runContainer should failed with invalid CpuShares")
-	}
-}
-
 func TestContainerState(t *testing.T) {
 	if testing.Short() {
 		return
@@ -526,6 +504,11 @@ func TestContainerState(t *testing.T) {
 		{Type: configs.NEWPID},
 		{Type: configs.NEWNET},
 	})
+
+	factory, err := libcontainer.New(root, libcontainer.Cgroupfs)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	container, err := factory.Create("test", config)
 	if err != nil {
@@ -578,6 +561,11 @@ func TestPassExtraFiles(t *testing.T) {
 
 	config := newTemplateConfig(rootfs)
 
+	factory, err := libcontainer.New(rootfs, libcontainer.Cgroupfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	container, err := factory.Create("test", config)
 	if err != nil {
 		t.Fatal(err)
@@ -623,113 +611,5 @@ func TestPassExtraFiles(t *testing.T) {
 	out2 := string(buf)
 	if out2 != "2" {
 		t.Fatalf("expected second pipe to receive '2', got '%s'", out2)
-	}
-}
-
-func TestMountCmds(t *testing.T) {
-	if testing.Short() {
-		return
-	}
-	root, err := newTestRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(root)
-
-	rootfs, err := newRootfs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer remove(rootfs)
-
-	tmpDir, err := ioutil.TempDir("", "tmpdir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	config := newTemplateConfig(rootfs)
-	config.Mounts = append(config.Mounts, &configs.Mount{
-		Source:      tmpDir,
-		Destination: filepath.Join(rootfs, "tmp"),
-		Device:      "bind",
-		Flags:       syscall.MS_BIND | syscall.MS_REC,
-		PremountCmds: []configs.Command{
-			{Path: "touch", Args: []string{filepath.Join(tmpDir, "hello")}},
-			{Path: "touch", Args: []string{filepath.Join(tmpDir, "world")}},
-		},
-		PostmountCmds: []configs.Command{
-			{Path: "cp", Args: []string{filepath.Join(rootfs, "tmp", "hello"), filepath.Join(rootfs, "tmp", "hello-backup")}},
-			{Path: "cp", Args: []string{filepath.Join(rootfs, "tmp", "world"), filepath.Join(rootfs, "tmp", "world-backup")}},
-		},
-	})
-
-	container, err := factory.Create("test", config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer container.Destroy()
-
-	pconfig := libcontainer.Process{
-		Args: []string{"sh", "-c", "env"},
-		Env:  standardEnvironment,
-	}
-	err = container.Start(&pconfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait for process
-	waitProcess(&pconfig, t)
-
-	entries, err := ioutil.ReadDir(tmpDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := []string{"hello", "hello-backup", "world", "world-backup"}
-	for i, e := range entries {
-		if e.Name() != expected[i] {
-			t.Errorf("Got(%s), expect %s", e.Name(), expected[i])
-		}
-	}
-}
-
-func TestSystemProperties(t *testing.T) {
-	if testing.Short() {
-		return
-	}
-	root, err := newTestRoot()
-	ok(t, err)
-	defer os.RemoveAll(root)
-
-	rootfs, err := newRootfs()
-	ok(t, err)
-	defer remove(rootfs)
-
-	config := newTemplateConfig(rootfs)
-	config.SystemProperties = map[string]string{
-		"kernel.shmmni": "8192",
-	}
-
-	container, err := factory.Create("test", config)
-	ok(t, err)
-	defer container.Destroy()
-
-	var stdout bytes.Buffer
-	pconfig := libcontainer.Process{
-		Args:   []string{"sh", "-c", "cat /proc/sys/kernel/shmmni"},
-		Env:    standardEnvironment,
-		Stdin:  nil,
-		Stdout: &stdout,
-	}
-	err = container.Start(&pconfig)
-	ok(t, err)
-
-	// Wait for process
-	waitProcess(&pconfig, t)
-
-	shmmniOutput := strings.TrimSpace(string(stdout.Bytes()))
-	if shmmniOutput != "8192" {
-		t.Fatalf("kernel.shmmni property expected to be 8192, but is %s", shmmniOutput)
 	}
 }

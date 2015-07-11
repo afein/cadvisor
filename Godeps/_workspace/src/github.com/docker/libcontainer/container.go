@@ -67,7 +67,7 @@ type Container interface {
 	// State returns the current container's state information.
 	//
 	// errors:
-	// Systemerror - System error.
+	// Systemerror - System erroor.
 	State() (*State, error)
 
 	// Returns the current config of the container.
